@@ -1,10 +1,10 @@
 
 import React, { useState } from "react";
 
+import MapSelection from "./components/MapSelection";
 import Sidebar from "./components/Sidebar";
 import MainContent from "./components/MainContent";
 import RightPanel from "./components/RightPanel";
-import MapSelection from "./components/MapSelection";
 
 import { WeatherPage } from "./weather/WeatherUI";
 import { Place, PLACES } from "./weather/useWeather";
@@ -12,7 +12,7 @@ import { Place, PLACES } from "./weather/useWeather";
 type ViewMode = "map" | "dashboard";
 
 export default function App() {
-  // Map selection or dashboard
+  // First screen: search and select an Iowa farm
   const [viewMode, setViewMode] =
     useState<ViewMode>("map");
 
@@ -20,11 +20,11 @@ export default function App() {
   const [activeNav, setActiveNav] =
     useState<string>("dashboard");
 
-  // Selected farm
+  // Selected farm data
   const [selectedFarm, setSelectedFarm] =
     useState<any>(null);
 
-  // Dashboard field
+  // Active dashboard field
   const [activeField, setActiveField] =
     useState<string | null>("north-field-a1");
 
@@ -32,10 +32,9 @@ export default function App() {
   const [weatherLocation, setWeatherLocation] =
     useState<Place>(PLACES[0]);
 
-  // Called when user selects a farm
+  // User clicks "Select this Farm"
   const handleFarmSelect = (farm: any) => {
     setSelectedFarm(farm);
-
     setActiveField("north-field-a1");
 
     if (
@@ -49,6 +48,7 @@ export default function App() {
       });
     }
 
+    // Automatically enter Overview
     setActiveNav("dashboard");
     setViewMode("dashboard");
   };
@@ -64,7 +64,7 @@ export default function App() {
     setViewMode("dashboard");
   };
 
-  // Farm location search and selection
+  // PAGE 1: Search Location + Select Farm
   if (viewMode === "map") {
     return (
       <MapSelection
@@ -73,6 +73,7 @@ export default function App() {
     );
   }
 
+  // PAGE 2: Dashboard / Weather Forecast
   return (
     <div className="flex h-screen w-full bg-[#ebf0ee] p-3 md:p-5 font-sans overflow-hidden">
 
