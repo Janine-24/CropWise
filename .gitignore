@@ -1,0 +1,4 @@
+
+data/
+*.gdb/
+*.geojson

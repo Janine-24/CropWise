@@ -2,8 +2,8 @@ import React from 'react';
 import { Calendar, ChevronDown, Check, Expand, Plus, Minus, Navigation, MoreVertical, MoreHorizontal } from 'lucide-react';
 import GaugeChart from './charts/GaugeChart';
 
-// Data for different fields
-const fieldData = {
+// Base Data
+const baseFieldData = {
   'north-field-a1': {
     name: 'North Field A1', type: 'Corn Plantation',
     score: 70, humidity: '32%', ph: '2.8', area: '2.3',
@@ -24,9 +24,32 @@ const fieldData = {
 interface MainContentProps {
   activeField: string | null;
   setActiveField: (field: string | null) => void;
+  selectedFarm?: any;
 }
 
-const MainContent: React.FC<MainContentProps> = ({ activeField, setActiveField }) => {
+const MainContent: React.FC<MainContentProps> = ({ activeField, setActiveField, selectedFarm }) => {
+  
+  // Inject real farm data if selected from map
+  const fieldData = JSON.parse(JSON.stringify(baseFieldData));
+  if (selectedFarm) {
+    const props = selectedFarm.properties || {};
+    const name = props.Field_ID || props.OBJECTID ? `Farm ID: ${props.Field_ID || props.OBJECTID}` : 'Selected Iowa Farm';
+    const type = props.Crop_Name || props.Crop || props.Crop_Category || 'USDA 2024 Crop';
+    const acres = props.Acres || props.ACRES || props.Shape__Area || 0;
+    const hectares = acres ? (acres * 0.404686).toFixed(2) : 'Unknown';
+
+    fieldData['north-field-a1'] = {
+      ...fieldData['north-field-a1'],
+      name: name,
+      type: type,
+      area: hectares,
+      score: 88, // mock updated score
+      status: 'Monitored',
+      statusColor: 'text-blue-400',
+      dotColor: 'bg-blue-400'
+    };
+  }
+
   const currentData = activeField ? fieldData[activeField as keyof typeof fieldData] : null;
 
   return (
@@ -56,19 +79,17 @@ const MainContent: React.FC<MainContentProps> = ({ activeField, setActiveField }
         </div>
 
         {/* Interactive Hotspots */}
-        {/* Hotspot 1: North Field A1 */}
         <button 
           onClick={() => setActiveField('north-field-a1')}
           className={`absolute top-[40%] left-[30%] group cursor-pointer ${activeField === 'north-field-a1' ? 'z-20' : 'z-10'}`}
         >
           <div className="relative flex items-center justify-center">
-            <div className={`absolute w-8 h-8 rounded-full opacity-50 animate-ping-slow ${activeField === 'north-field-a1' ? 'bg-yellow-400' : 'bg-white'}`}></div>
-            <div className={`relative w-4 h-4 rounded-full border-2 border-white shadow-lg transition-colors ${activeField === 'north-field-a1' ? 'bg-yellow-500' : 'bg-gray-800 group-hover:bg-gray-600'}`}></div>
+            <div className={`absolute w-8 h-8 rounded-full opacity-50 animate-ping-slow ${activeField === 'north-field-a1' ? (selectedFarm ? 'bg-blue-400' : 'bg-yellow-400') : 'bg-white'}`}></div>
+            <div className={`relative w-4 h-4 rounded-full border-2 border-white shadow-lg transition-colors ${activeField === 'north-field-a1' ? (selectedFarm ? 'bg-blue-500' : 'bg-yellow-500') : 'bg-gray-800 group-hover:bg-gray-600'}`}></div>
           </div>
-          <span className="absolute top-6 left-1/2 transform -translate-x-1/2 whitespace-nowrap text-xs font-bold text-white drop-shadow-md">North Field A1</span>
+          <span className="absolute top-6 left-1/2 transform -translate-x-1/2 whitespace-nowrap text-xs font-bold text-white drop-shadow-md">{selectedFarm ? 'Selected USDA Farm' : 'North Field A1'}</span>
         </button>
 
-        {/* Hotspot 2: East Field B2 */}
         <button 
           onClick={() => setActiveField('east-field-b2')}
           className={`absolute top-[25%] left-[65%] group cursor-pointer ${activeField === 'east-field-b2' ? 'z-20' : 'z-10'}`}
@@ -80,7 +101,6 @@ const MainContent: React.FC<MainContentProps> = ({ activeField, setActiveField }
           <span className="absolute top-6 left-1/2 transform -translate-x-1/2 whitespace-nowrap text-xs font-bold text-white drop-shadow-md">East Field B2</span>
         </button>
 
-        {/* Hotspot 3: South Field C3 */}
         <button 
           onClick={() => setActiveField('south-field-c3')}
           className={`absolute bottom-[30%] left-[45%] group cursor-pointer ${activeField === 'south-field-c3' ? 'z-20' : 'z-10'}`}
@@ -91,7 +111,6 @@ const MainContent: React.FC<MainContentProps> = ({ activeField, setActiveField }
           </div>
           <span className="absolute top-6 left-1/2 transform -translate-x-1/2 whitespace-nowrap text-xs font-bold text-white drop-shadow-md">South Field C3</span>
         </button>
-
 
         {/* Dynamic Glassmorphism Card */}
         {currentData && (
@@ -176,17 +195,17 @@ const MainContent: React.FC<MainContentProps> = ({ activeField, setActiveField }
             <tbody className="text-gray-800">
               <tr 
                 onClick={() => setActiveField('north-field-a1')}
-                className={`border-b border-gray-50 last:border-0 hover:bg-gray-50/80 transition cursor-pointer ${activeField === 'north-field-a1' ? 'bg-green-50/50' : ''}`}
+                className={`border-b border-gray-50 last:border-0 hover:bg-gray-50/80 transition cursor-pointer ${activeField === 'north-field-a1' ? (selectedFarm ? 'bg-blue-50/50' : 'bg-green-50/50') : ''}`}
               >
                 <td className="py-4 pl-2">
-                  <div className={`w-4 h-4 rounded border-2 ${activeField === 'north-field-a1' ? 'border-green-500 bg-green-500' : 'border-gray-200'}`}>
+                  <div className={`w-4 h-4 rounded border-2 ${activeField === 'north-field-a1' ? (selectedFarm ? 'border-blue-500 bg-blue-500' : 'border-green-500 bg-green-500') : 'border-gray-200'}`}>
                     {activeField === 'north-field-a1' && <Check className="w-3 h-3 text-white" />}
                   </div>
                 </td>
-                <td className="py-4 font-medium">North Field A1</td>
-                <td className="py-4 text-gray-500">Corn</td>
+                <td className="py-4 font-medium">{fieldData['north-field-a1'].name}</td>
+                <td className="py-4 text-gray-500">{fieldData['north-field-a1'].type}</td>
                 <td className="py-4">
-                  <span className="px-3 py-1 rounded-full bg-green-100 text-green-700 text-xs font-semibold">Healthy</span>
+                  <span className={`px-3 py-1 rounded-full text-xs font-semibold ${selectedFarm ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'}`}>{fieldData['north-field-a1'].status}</span>
                 </td>
                 <td className="py-4 font-medium">68%</td>
                 <td className="py-4 font-medium">26°C</td>
