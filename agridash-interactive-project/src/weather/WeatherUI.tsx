@@ -286,7 +286,7 @@ export function WeatherPage({
   const today = weather?.days[0];
 
   return (
-    <main className="flex-1 min-w-0 h-full overflow-y-auto custom-scrollbar ml-5 mr-5">
+    <main data-testid="weather-forecast-page" className="flex-1 min-w-0 h-full overflow-y-auto custom-scrollbar ml-5 mr-5">
       <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
         <div>
           <p className="text-sm font-semibold text-green-700">
