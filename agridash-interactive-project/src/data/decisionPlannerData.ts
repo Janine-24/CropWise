@@ -237,6 +237,17 @@ export function setSharedFarmLocationState(next: {
   if (!next.verifiedLocation) {
     sharedVerifiedLocation = null;
     writeValidatedLocationToStorage(null);
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      try {
+        window.dispatchEvent(
+          new CustomEvent('cropwise-farm-location-changed', {
+            detail: { verifiedLocation: null },
+          })
+        );
+      } catch {
+        // Ignore in non-DOM test environments
+      }
+    }
     return;
   }
 
@@ -262,6 +273,17 @@ export function setSharedFarmLocationState(next: {
 
   sharedVerifiedLocation = sanitized;
   writeValidatedLocationToStorage(sanitized);
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    try {
+      window.dispatchEvent(
+        new CustomEvent('cropwise-farm-location-changed', {
+          detail: { verifiedLocation: sanitized },
+        })
+      );
+    } catch {
+      // Ignore in non-DOM test environments
+    }
+  }
 }
 
 export const PLANNER_GOALS: readonly PlannerGoalOption[] = [

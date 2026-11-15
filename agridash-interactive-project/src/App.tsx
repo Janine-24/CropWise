@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import MainContent from './components/MainContent';
 import RightPanel from './components/RightPanel';
@@ -6,104 +6,167 @@ import MapSelection from './components/MapSelection';
 import CropRecommendations from './components/pages/CropRecommendations';
 import DecisionPlanner from './components/pages/DecisionPlanner';
 import ReportsHistory from './components/pages/ReportsHistory';
+import RiskManagement from './components/pages/RiskManagement';
+import FarmManagement from './components/pages/FarmManagement';
 import { WeatherPage } from './weather/WeatherUI';
-import { Place, PLACES } from './weather/useWeather';
-import { validateCoordinates } from './services/nasaPowerClient';
-import { setSharedFarmLocationState } from './data/decisionPlannerData';
-import { getSavedMyFarmProfile, saveMyFarmProfile } from './services/realFarmEngine';
+import { isLikelyUSCoordinate, Place, PLACES } from './weather/useWeather';
+import { getSharedFarmLocationState } from './data/decisionPlannerData';
+import {
+  getMyFarmMultiFieldState,
+  getSelectedMapFields,
+  MyFarmMultiFieldState,
+  removeSelectedFieldSlot,
+  saveMyFarmMultiFieldState,
+} from './services/riskAndFarmStore';
 
 type ViewMode = 'map' | 'dashboard';
 
-const unimplementedSectionTitles: Record<string, string> = {
-  team: 'Farm Management',
-  settings: 'Settings',
-  info: 'Information',
-};
-
 export default function App() {
-  // Default landing view: Dashboard (Iowa USDA Map remains accessible via Sidebar)
-  const [viewMode, setViewMode] = useState<ViewMode>('dashboard');
+  const [multiFieldState, setMultiFieldState] = useState<MyFarmMultiFieldState>(
+    () => getMyFarmMultiFieldState()
+  );
 
-  // Sidebar navigation
+  const selectedFields = useMemo(
+    () => getSelectedMapFields(multiFieldState),
+    [multiFieldState]
+  );
+
+  const hasInitialSavedFarm =
+    selectedFields.length > 0 ||
+    getSharedFarmLocationState().verifiedLocation !== null;
+
+  // Map-First for visitors without a saved farm; Dashboard directly for returning visitors with saved fields
+  const [viewMode, setViewMode] = useState<ViewMode>(() =>
+    hasInitialSavedFarm ? 'dashboard' : 'map'
+  );
+
   const [activeNav, setActiveNav] = useState<string>('dashboard');
 
-  // Selected Iowa USDA farm parcel (Dashboard state only; does not silently overwrite My Farm)
-  const [selectedFarm, setSelectedFarm] = useState<any>(null);
-  const [myFarmTransferMessage, setMyFarmTransferMessage] = useState<string | null>(null);
-
-  // Dashboard active field
-  const [activeField, setActiveField] = useState<string | null>('north-field-a1');
+  // Optional demo field id used only when user switches to Explore Demo mode
+  const [activeDemoField, setActiveDemoField] = useState<string | null>(
+    'north-field-a1'
+  );
 
   // Shared weather location for NOAA / Open-Meteo WeatherPanel & WeatherPage
-  const [weatherLocation, setWeatherLocation] = useState<Place>(PLACES[0]);
+  const [weatherLocation, setWeatherLocation] = useState<Place>(() => {
+    const activeSlot =
+      selectedFields.find((f) => f.fieldId === multiFieldState.activeFieldId) ??
+      selectedFields[0];
+    if (
+      activeSlot &&
+      activeSlot.latitude !== null &&
+      activeSlot.longitude !== null
+    ) {
+      return {
+        name: activeSlot.fieldName,
+        region: isLikelyUSCoordinate(activeSlot.latitude, activeSlot.longitude)
+          ? 'US Farm Coordinate'
+          : 'Global Coordinate',
+        lat: activeSlot.latitude,
+        lon: activeSlot.longitude,
+        isUS: isLikelyUSCoordinate(activeSlot.latitude, activeSlot.longitude),
+      };
+    }
 
-  // Called when user selects a farm parcel on the Iowa USDA Map
-  const handleFarmSelect = (farm: any) => {
-    setSelectedFarm(farm);
-    setMyFarmTransferMessage(null);
-    setActiveField('north-field-a1');
+    const initialLoc = getSharedFarmLocationState().verifiedLocation;
+    if (initialLoc) {
+      return {
+        name: initialLoc.label.split('—')[0].trim(),
+        region: isLikelyUSCoordinate(initialLoc.latitude, initialLoc.longitude)
+          ? 'US Farm Coordinate'
+          : 'Global Coordinate',
+        lat: initialLoc.latitude,
+        lon: initialLoc.longitude,
+        isUS: isLikelyUSCoordinate(initialLoc.latitude, initialLoc.longitude),
+      };
+    }
+
+    return PLACES[0];
+  });
+
+  // Synchronize multi-field state and weather location whenever fields or coordinates change anywhere in the app
+  useEffect(() => {
+    const syncStateFromStorage = () => {
+      const latestMulti = getMyFarmMultiFieldState();
+      setMultiFieldState(latestMulti);
+
+      const latestSelected = getSelectedMapFields(latestMulti);
+      const activeSlot =
+        latestSelected.find((f) => f.fieldId === latestMulti.activeFieldId) ??
+        latestSelected[0];
+
+      if (
+        activeSlot &&
+        activeSlot.latitude !== null &&
+        activeSlot.longitude !== null
+      ) {
+        setWeatherLocation({
+          name: activeSlot.fieldName,
+          region: isLikelyUSCoordinate(
+            activeSlot.latitude,
+            activeSlot.longitude
+          )
+            ? 'US Farm Coordinate'
+            : 'Global Coordinate',
+          lat: activeSlot.latitude,
+          lon: activeSlot.longitude,
+          isUS: isLikelyUSCoordinate(activeSlot.latitude, activeSlot.longitude),
+        });
+        return;
+      }
+
+      const latestLoc = getSharedFarmLocationState().verifiedLocation;
+      if (latestLoc) {
+        setWeatherLocation({
+          name: latestLoc.label.split('—')[0].trim(),
+          region: isLikelyUSCoordinate(
+            latestLoc.latitude,
+            latestLoc.longitude
+          )
+            ? 'US Farm Coordinate'
+            : 'Global Coordinate',
+          lat: latestLoc.latitude,
+          lon: latestLoc.longitude,
+          isUS: isLikelyUSCoordinate(latestLoc.latitude, latestLoc.longitude),
+        });
+      }
+    };
 
     if (
-      typeof farm?.location?.lat === 'number' &&
-      typeof farm?.location?.lon === 'number'
+      typeof window !== 'undefined' &&
+      typeof window.addEventListener === 'function'
     ) {
-      setWeatherLocation({
-        name: 'Selected Iowa Farm',
-        lat: farm.location.lat,
-        lon: farm.location.lon,
-      });
-    }
-
-    setActiveNav('dashboard');
-    setViewMode('dashboard');
-  };
-
-  // Explicit user action to transfer selected Iowa USDA parcel coordinates to My Farm mode
-  const handleUseSelectedFarmForMyFarm = () => {
-    const rawLat = selectedFarm?.location?.lat;
-    const rawLon = selectedFarm?.location?.lon;
-    const validation = validateCoordinates(rawLat, rawLon);
-    if (!validation.valid) {
-      setMyFarmTransferMessage(
-        validation.error || 'Selected parcel does not have valid coordinates.'
+      window.addEventListener('cropwise-fields-changed', syncStateFromStorage);
+      window.addEventListener(
+        'cropwise-farm-location-changed',
+        syncStateFromStorage
       );
-      return;
+      return () => {
+        window.removeEventListener(
+          'cropwise-fields-changed',
+          syncStateFromStorage
+        );
+        window.removeEventListener(
+          'cropwise-farm-location-changed',
+          syncStateFromStorage
+        );
+      };
     }
+  }, []);
 
-    const props = selectedFarm?.properties || {};
-    const parcelId = props.Field_ID || props.CSBID || props.OBJECTID || 'Iowa USDA Parcel';
-    const label = `Iowa USDA Parcel (${parcelId})`;
-
-    setSharedFarmLocationState({
-      verifiedLocation: {
-        latitude: validation.latitude,
-        longitude: validation.longitude,
-        label,
-        source: 'public-test-preset',
-        updatedAtIso: new Date().toISOString(),
-      },
-      draftLatInput: String(validation.latitude),
-      draftLonInput: String(validation.longitude),
+  const handleSelectActiveField = (fieldId: string) => {
+    const updated = saveMyFarmMultiFieldState({
+      ...multiFieldState,
+      activeFieldId: fieldId,
     });
-
-    const currentProfile = getSavedMyFarmProfile();
-    saveMyFarmProfile({
-      ...currentProfile,
-      experienceMode: 'my-farm',
-      farmName: label,
-    });
-
-    setMyFarmTransferMessage(
-      `Saved (${validation.latitude.toFixed(4)}°, ${validation.longitude.toFixed(4)}°) to My Farm`
-    );
+    setMultiFieldState(updated);
   };
 
-  const handleClearSelectedFarm = () => {
-    setSelectedFarm(null);
-    setMyFarmTransferMessage(null);
+  const handleRemoveField = (fieldId: string) => {
+    const updated = removeSelectedFieldSlot(fieldId);
+    setMultiFieldState(updated);
   };
 
-  // Sidebar navigation handler
   const handleNavigate = (page: string) => {
     if (page === 'map') {
       setViewMode('map');
@@ -114,40 +177,53 @@ export default function App() {
     setViewMode('dashboard');
   };
 
-  // Full-screen Iowa USDA Farm Map Selection view
   if (viewMode === 'map') {
     return (
       <MapSelection
-        onFarmSelect={handleFarmSelect}
-        onBackToDashboard={() => setViewMode('dashboard')}
+        onDoneSelection={() => {
+          setMultiFieldState(getMyFarmMultiFieldState());
+          setActiveNav('dashboard');
+          setViewMode('dashboard');
+        }}
+        onBackToDashboard={() => {
+          setMultiFieldState(getMyFarmMultiFieldState());
+          setViewMode('dashboard');
+        }}
+        onContinueWithoutFarm={() => {
+          setActiveNav('dashboard');
+          setViewMode('dashboard');
+        }}
       />
     );
   }
 
   const renderMainView = () => {
     switch (activeNav) {
-      case 'dashboard':
-        return (
-          <MainContent
-            activeField={activeField}
-            setActiveField={setActiveField}
-            selectedFarm={selectedFarm}
-            onUseSelectedFarmForMyFarm={handleUseSelectedFarmForMyFarm}
-            onClearSelectedFarm={handleClearSelectedFarm}
-            myFarmTransferMessage={myFarmTransferMessage}
-          />
-        );
       case 'plants':
         return (
           <CropRecommendations
-            activeField={activeField}
+            activeField={activeDemoField}
             onNavigateToDecisionPlanner={() => setActiveNav('analytics')}
           />
         );
       case 'analytics':
-        return <DecisionPlanner activeField={activeField} />;
+        return <DecisionPlanner activeField={activeDemoField} />;
+      case 'risks':
+        return (
+          <RiskManagement
+            weatherPlace={weatherLocation}
+            onNavigate={handleNavigate}
+          />
+        );
+      case 'team':
+        return <FarmManagement onNavigate={handleNavigate} />;
       case 'reports':
-        return <ReportsHistory activeField={activeField} />;
+        return (
+          <ReportsHistory
+            activeField={activeDemoField}
+            onNavigate={handleNavigate}
+          />
+        );
       case 'weather':
         return (
           <WeatherPage
@@ -155,44 +231,20 @@ export default function App() {
             onChange={setWeatherLocation}
           />
         );
-      default: {
-        const sectionTitle = unimplementedSectionTitles[activeNav] || activeNav;
+      case 'dashboard':
+      default:
         return (
-          <main className="flex-1 flex flex-col min-w-0 ml-3 mr-3 md:ml-5 md:mr-5 gap-5 relative h-full overflow-y-auto pr-1 custom-scrollbar">
-            <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-50 flex-shrink-0">
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <div>
-                  <h1 className="text-xl font-semibold text-gray-800">{sectionTitle}</h1>
-                  <p className="text-sm text-gray-500">
-                    Module reserved for future team integration
-                  </p>
-                </div>
-                <span className="px-3 py-1 rounded-full bg-gray-100 text-gray-600 text-xs font-semibold">
-                  Coming Soon
-                </span>
-              </div>
-            </div>
-
-            <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-50 flex-1 flex flex-col items-start justify-between gap-4">
-              <div>
-                <h2 className="text-sm font-semibold text-gray-800">
-                  {sectionTitle} View — Coming Soon
-                </h2>
-                <p className="text-xs text-gray-500 mt-1 leading-relaxed">
-                  The <code className="text-green-700 font-medium">{activeNav}</code> navigation slot is preserved for team development. Use the sidebar or the button below to return to the active Dashboard or NASA decision-support pages.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setActiveNav('dashboard')}
-                className="px-4 py-2 rounded-xl bg-green-800 text-white text-xs font-semibold shadow-sm hover:bg-green-700 transition-colors cursor-pointer"
-              >
-                Back to Dashboard
-              </button>
-            </div>
-          </main>
+          <MainContent
+            selectedFields={selectedFields}
+            activeFieldId={multiFieldState.activeFieldId}
+            onSelectField={handleSelectActiveField}
+            onRemoveField={handleRemoveField}
+            onOpenFullMap={() => setViewMode('map')}
+            onNavigate={handleNavigate}
+            activeDemoField={activeDemoField}
+            setActiveDemoField={setActiveDemoField}
+          />
         );
-      }
     }
   };
 

@@ -5,6 +5,7 @@ import {
   GeoJSON,
   Circle,
   Marker,
+  Popup,
   ZoomControl,
   useMap,
   useMapEvents,
@@ -15,12 +16,24 @@ import {
   Navigation,
   MapPin,
   Loader2,
-  ArrowLeft,
-  Info,
   CheckCircle2,
+  Plus,
+  X,
+  ArrowRight,
 } from 'lucide-react';
 // @ts-ignore
 import 'leaflet/dist/leaflet.css';
+import {
+  addOrSelectFieldFromMap,
+  getMyFarmMultiFieldState,
+  getSelectedMapFields,
+  getStableParcelId,
+  MAX_MY_FARM_FIELDS,
+  MyFarmFieldSlot,
+  MyFarmMultiFieldState,
+  removeSelectedFieldSlot,
+  saveMyFarmMultiFieldState,
+} from '../services/riskAndFarmStore';
 
 type Location = {
   lat: number;
@@ -39,8 +52,10 @@ type FarmCollection = {
 };
 
 interface MapSelectionProps {
-  onFarmSelect: (farm: any) => void;
+  onFarmSelect?: (farm: any) => void;
+  onDoneSelection?: () => void;
   onBackToDashboard?: () => void;
+  onContinueWithoutFarm?: () => void;
 }
 
 const AMES: Location = {
@@ -49,12 +64,6 @@ const AMES: Location = {
 };
 
 const RADII = [10, 25, 50];
-
-// Approximate Iowa bounds for preliminary validation.
-// These bounds are NOT an exact state boundary.
-function isNearIowa(lat: number, lng: number) {
-  return lat >= 40.3 && lat <= 43.6 && lng >= -96.7 && lng <= -90.0;
-}
 
 const markerIcon = new L.Icon({
   iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
@@ -152,7 +161,7 @@ function MapController({
     map.flyTo(
       [center.lat, center.lng],
       radius === 10 ? 12 : radius === 25 ? 11 : 10,
-      { duration: 1.2 }
+      { duration: 1.0 }
     );
   }, [map, center.lat, center.lng, radius]);
 
@@ -165,7 +174,7 @@ function MapClickListener({
   onMapClick: (lat: number, lng: number) => void;
 }) {
   useMapEvents({
-    click(event) {
+    click(event: any) {
       onMapClick(event.latlng.lat, event.latlng.lng);
     },
   });
@@ -192,26 +201,19 @@ export async function fetchUsdaArcGisFieldsForIowa(
   if (envRes.ok) {
     const envData = await envRes.json();
     if (
-      envData?.type === 'FeatureCollection' &&
-      Array.isArray(envData.features) &&
-      envData.features.length > 0
+      dataHasFeatures(envData)
     ) {
       return { collection: envData };
     }
   }
 
-  // Query real Iowa STATEFIPS='19' features from USDA NASS Crop Sequence Boundaries 2024 FeatureServer
   const iowaUrl = `https://services3.arcgis.com/g6eV2CrSSwCZj8Mc/arcgis/rest/services/NASS_Crop_Sequence_Boundaries_2024/FeatureServer/0/query?where=STATEFIPS%3D%2719%27&outFields=*&f=geojson&resultRecordCount=200`;
   const iowaRes = await fetch(iowaUrl, { signal });
   if (!iowaRes.ok) {
     throw new Error(`USDA ArcGIS service returned status ${iowaRes.status}.`);
   }
   const iowaData = await iowaRes.json();
-  if (
-    iowaData?.type === 'FeatureCollection' &&
-    Array.isArray(iowaData.features) &&
-    iowaData.features.length > 0
-  ) {
+  if (dataHasFeatures(iowaData)) {
     const firstCenter = getFeatureCenter(iowaData.features[0]);
     return {
       collection: iowaData,
@@ -222,12 +224,38 @@ export async function fetchUsdaArcGisFieldsForIowa(
   throw new Error('No Iowa USDA field boundaries returned by ArcGIS service.');
 }
 
+function dataHasFeatures(data: any): boolean {
+  return (
+    data?.type === 'FeatureCollection' &&
+    Array.isArray(data.features) &&
+    data.features.length > 0
+  );
+}
+
 export default function MapSelection({
   onFarmSelect,
+  onDoneSelection,
   onBackToDashboard,
+  onContinueWithoutFarm,
 }: MapSelectionProps) {
+  const [multiState, setMultiState] = useState<MyFarmMultiFieldState>(() =>
+    getMyFarmMultiFieldState()
+  );
+  const selectedFields = useMemo(
+    () => getSelectedMapFields(multiState),
+    [multiState]
+  );
+
   const [search, setSearch] = useState('');
-  const [center, setCenter] = useState<Location>(AMES);
+  const [center, setCenter] = useState<Location>(() => {
+    const active = selectedFields.find(
+      (f) => f.fieldId === multiState.activeFieldId
+    );
+    if (active && active.latitude !== null && active.longitude !== null) {
+      return { lat: active.latitude, lng: active.longitude };
+    }
+    return AMES;
+  });
   const [radius, setRadius] = useState(25);
 
   const [fields, setFields] = useState<FarmCollection | null>(null);
@@ -236,9 +264,9 @@ export default function MapSelection({
   const [loading, setLoading] = useState(true);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState('');
-  const [searched, setSearched] = useState(false);
+  const [statusNotice, setStatusNotice] = useState('');
+  const [pinnedPoint, setPinnedPoint] = useState<Location | null>(null);
 
-  // Attempt local /data/ames_fields.geojson first; if unavailable, query real USDA ArcGIS service. Never fabricate polygons.
   useEffect(() => {
     const controller = new AbortController();
 
@@ -260,12 +288,12 @@ export default function MapSelection({
               Array.isArray(data.features)
             ) {
               setFields(data);
-              setDataSourceLabel('Local Ames GeoJSON');
+              setDataSourceLabel('Iowa USDA GeoJSON');
               loadedLocal = true;
             }
           }
         } catch {
-          // Proceed to real USDA ArcGIS fallback
+          // Proceed to USDA ArcGIS fallback
         }
 
         if (!loadedLocal) {
@@ -276,13 +304,13 @@ export default function MapSelection({
             controller.signal
           );
           setFields(collection);
-          setDataSourceLabel('USDA NASS Crop Sequence Boundaries (ArcGIS Live)');
+          setDataSourceLabel('USDA NASS CSB 2024');
         }
       } catch (err: any) {
         if (err.name !== 'AbortError') {
           setFields(null);
           setError(
-            'Local /data/ames_fields.geojson is not present in the repository and the live USDA ArcGIS service could not be reached. Map navigation and radius controls remain active.'
+            'USDA parcel polygons unavailable offline; you can still click any point on the map to add point-based field coordinates.'
           );
         }
       } finally {
@@ -297,10 +325,8 @@ export default function MapSelection({
     return () => controller.abort();
   }, []);
 
-  // Filter locally by selected location and radius.
   const filteredFields = useMemo(() => {
     if (!fields) return [];
-
     return fields.features.filter((feature) =>
       isWithinRadius(feature, center, radius)
     );
@@ -314,71 +340,140 @@ export default function MapSelection({
     [filteredFields]
   );
 
-  const totalHectares = useMemo(() => {
-    return filteredFields.reduce((total, feature) => {
-      const acres = Number(
-        feature.properties?.CSBACRES || feature.properties?.Acres || 0
-      );
-      return total + acres * 0.404686;
-    }, 0);
-  }, [filteredFields]);
-
-  // Center on loaded USDA Iowa parcels when Ames local file is absent
-  const handleLoadIowaParcels = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const { collection, suggestedCenter } = await fetchUsdaArcGisFieldsForIowa(
-        center.lat,
-        center.lng,
-        radius
-      );
-      setFields(collection);
-      setDataSourceLabel('USDA NASS Crop Sequence Boundaries (ArcGIS Live)');
-      if (suggestedCenter) {
-        setCenter(suggestedCenter);
-        setSearched(true);
+  // Set of selected parcelIds for fast styling
+  const selectedParcelMap = useMemo(() => {
+    const map = new Map<string, MyFarmFieldSlot>();
+    for (const slot of selectedFields) {
+      if (slot.parcelId) {
+        map.set(slot.parcelId, slot);
       }
-    } catch (err: any) {
-      setError(
-        err?.message ||
-          'USDA ArcGIS service is currently unavailable. No fabricated parcels are shown.'
-      );
-    } finally {
-      setLoading(false);
     }
-  };
+    return map;
+  }, [selectedFields]);
 
-  // Select an active real USDA parcel from filteredFields (or loaded fields)
-  const handleSelectActiveIowaParcel = () => {
-    const feature = filteredFields[0] || fields?.features?.[0];
-    if (!feature) {
-      setError(
-        'No real USDA parcel is currently loaded to select. Click "Load Iowa USDA Parcels" first.'
-      );
-      return;
-    }
+  const handleAddParcelFeature = (feature: FarmFeature) => {
     const farmCenter = getFeatureCenter(feature) || center;
     const props = feature.properties || {};
-    onFarmSelect({
+    const enriched = {
       ...feature,
       properties: {
         ...props,
         Field_ID: props.Field_ID || props.CSBID || props.OBJECTID,
-        Crop_Name: props.Crop_Name || props.Crop || 'USDA 2024 Crop',
+        Crop_Name: props.Crop_Name || props.Crop || 'USDA Parcel',
         Acres: props.Acres || props.CSBACRES,
       },
       location: {
         lat: farmCenter.lat,
         lon: farmCenter.lng,
       },
-    });
+    };
+
+    const result = addOrSelectFieldFromMap(enriched);
+    setMultiState(result.state);
+    setError('');
+
+    if (result.status === 'limit-reached') {
+      setStatusNotice(
+        `Maximum of ${MAX_MY_FARM_FIELDS} fields selected. Remove a field first to add another.`
+      );
+    } else if (result.status === 'already-selected') {
+      setStatusNotice(`"${result.slot.fieldName}" is now set as your active field.`);
+    } else {
+      setStatusNotice(
+        `Added "${result.slot.fieldName}" (${
+          getSelectedMapFields(result.state).length
+        }/${MAX_MY_FARM_FIELDS} selected).`
+      );
+    }
+
+    if (onFarmSelect) {
+      onFarmSelect(enriched);
+    }
   };
 
-  // Search only within Iowa, USA.
+  const handleAddQuickIowaParcel = () => {
+    // Pick the first unselected parcel in filteredFields so repeated clicks add distinct parcels!
+    const pool = filteredFields.length > 0 ? filteredFields : fields?.features ?? [];
+    if (pool.length === 0) {
+      setError('No USDA parcels loaded in range. Click "Add Point Field" to add current coordinates.');
+      return;
+    }
+
+    const nextUnselected =
+      pool.find((feat) => {
+        const fc = getFeatureCenter(feat) || center;
+        const pid = getStableParcelId(feat, fc.lat, fc.lng);
+        return !selectedParcelMap.has(pid);
+      }) ?? pool[0];
+
+    handleAddParcelFeature(nextUnselected);
+  };
+
+  const handleAddPointLocation = (lat: number, lng: number, customLabel?: string) => {
+    const pointFeature = {
+      type: 'Feature' as const,
+      properties: {
+        Field_ID:
+          customLabel ||
+          `Point Field (${lat.toFixed(4)}°, ${lng.toFixed(4)}°)`,
+      },
+      geometry: null,
+      location: {
+        lat,
+        lon: lng,
+      },
+    };
+
+    const result = addOrSelectFieldFromMap(pointFeature);
+    setMultiState(result.state);
+    setError('');
+
+    if (result.status === 'limit-reached') {
+      setStatusNotice(
+        `Maximum of ${MAX_MY_FARM_FIELDS} fields reached. Remove a field to add another.`
+      );
+    } else {
+      setStatusNotice(
+        `Added point field "${result.slot.fieldName}" (real farm boundary polygon unavailable at this point).`
+      );
+    }
+
+    if (onFarmSelect) {
+      onFarmSelect(pointFeature);
+    }
+  };
+
+  const handleSetActiveField = (fieldId: string) => {
+    const target = selectedFields.find((f) => f.fieldId === fieldId);
+    if (!target) return;
+    const next = saveMyFarmMultiFieldState({
+      ...multiState,
+      activeFieldId: fieldId,
+    });
+    setMultiState(next);
+    if (target.latitude !== null && target.longitude !== null) {
+      setCenter({ lat: target.latitude, lng: target.longitude });
+    }
+  };
+
+  const handleRemoveField = (fieldId: string) => {
+    const next = removeSelectedFieldSlot(fieldId);
+    setMultiState(next);
+    setStatusNotice('Removed field from My Fields.');
+  };
+
+  const handleFinishToDashboard = () => {
+    if (onDoneSelection) {
+      onDoneSelection();
+      return;
+    }
+    if (onBackToDashboard) {
+      onBackToDashboard();
+    }
+  };
+
   async function handleSearch(event: React.FormEvent) {
     event.preventDefault();
-
     const query = search.trim();
     if (!query) return;
 
@@ -388,8 +483,7 @@ export default function MapSelection({
     try {
       const params = new URLSearchParams({
         format: 'json',
-        q: `${query}, Iowa, USA`,
-        countrycodes: 'us',
+        q: query,
         limit: '5',
         addressdetails: '1',
       });
@@ -403,23 +497,17 @@ export default function MapSelection({
       }
 
       const results = await response.json();
-
-      const result = results.find((item: any) => {
-        const state = item.address?.state;
-        return state === 'Iowa';
-      });
+      const result = results[0];
 
       if (!result) {
-        throw new Error(
-          'Location not found in Iowa. Try Ames or Des Moines.'
-        );
+        throw new Error('Location not found. Try Ames, Iowa or click the map.');
       }
 
       const lat = Number(result.lat);
       const lng = Number(result.lon);
 
       setCenter({ lat, lng });
-      setSearched(true);
+      setPinnedPoint({ lat, lng });
     } catch (err: any) {
       setError(err.message || 'Search failed.');
     } finally {
@@ -427,15 +515,10 @@ export default function MapSelection({
     }
   }
 
-  function selectLocation(lat: number, lng: number) {
-    if (!isNearIowa(lat, lng)) {
-      setError('Please select a location within Iowa, USA.');
-      return;
-    }
-
+  function handleMapClick(lat: number, lng: number) {
     setError('');
     setCenter({ lat, lng });
-    setSearched(true);
+    setPinnedPoint({ lat, lng });
   }
 
   function handleLocate() {
@@ -449,11 +532,14 @@ export default function MapSelection({
 
     navigator.geolocation.getCurrentPosition(
       (position) => {
-        selectLocation(position.coords.latitude, position.coords.longitude);
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+        setCenter({ lat, lng });
+        setPinnedPoint({ lat, lng });
         setSearching(false);
       },
       () => {
-        setError('Unable to get GPS location. Search an Iowa city instead.');
+        setError('Unable to get GPS location. Search or click the map instead.');
         setSearching(false);
       },
       {
@@ -463,109 +549,142 @@ export default function MapSelection({
     );
   }
 
+  function styleFeature(feature: any) {
+    const fc = getFeatureCenter(feature) || center;
+    const pid = getStableParcelId(feature, fc.lat, fc.lng);
+    const matchedSlot = selectedParcelMap.get(pid);
+
+    if (matchedSlot) {
+      const isActive = matchedSlot.fieldId === multiState.activeFieldId;
+      return isActive
+        ? {
+            color: '#b45309',
+            weight: 3.5,
+            fillColor: '#f59e0b',
+            fillOpacity: 0.55,
+          }
+        : {
+            color: '#0369a1',
+            weight: 2.5,
+            fillColor: '#38bdf8',
+            fillOpacity: 0.45,
+          };
+    }
+
+    return {
+      color: '#15803d',
+      weight: 1,
+      fillColor: '#4ade80',
+      fillOpacity: 0.3,
+    };
+  }
+
   function onEachFeature(feature: FarmFeature, layer: L.Layer) {
     const properties = feature.properties || {};
-
     const acres = Number(properties.CSBACRES ?? properties.Acres);
-    const hectares = Number.isFinite(acres)
-      ? (acres * 0.404686).toFixed(2)
-      : 'N/A';
+    const hectares = Number.isFinite(acres) && acres > 0
+      ? `${(acres * 0.404686).toFixed(2)} ha`
+      : 'Area N/A';
+
+    const fc = getFeatureCenter(feature) || center;
+    const pid = getStableParcelId(feature, fc.lat, fc.lng);
+    const existingSlot = selectedParcelMap.get(pid);
+    const parcelCode = properties.CSBID ?? properties.Field_ID ?? 'Parcel';
 
     const container = document.createElement('div');
-    container.style.minWidth = '210px';
+    container.style.minWidth = '190px';
 
-    const title = document.createElement('h3');
-    title.textContent = 'Agricultural Field';
-    title.style.fontWeight = 'bold';
-    title.style.fontSize = '16px';
-    title.style.marginBottom = '8px';
+    const title = document.createElement('div');
+    title.textContent = `USDA Parcel ${parcelCode}`;
+    title.style.fontWeight = '700';
+    title.style.fontSize = '14px';
+    title.style.marginBottom = '4px';
 
-    const id = document.createElement('p');
-    id.textContent = `Field ID: ${
-      properties.CSBID ?? properties.Field_ID ?? 'N/A'
-    }`;
-
-    const area = document.createElement('p');
-    area.textContent = `Area: ${hectares} ha`;
+    const meta = document.createElement('div');
+    meta.textContent = `${hectares} · (${fc.lat.toFixed(4)}°, ${fc.lng.toFixed(4)}°)`;
+    meta.style.fontSize = '12px';
+    meta.style.color = '#4b5563';
 
     const button = document.createElement('button');
-    button.textContent = 'Select this Farm';
+    button.textContent = existingSlot
+      ? existingSlot.fieldId === multiState.activeFieldId
+        ? 'Active in My Fields'
+        : 'Set as Active Field'
+      : `Add to My Fields (${selectedFields.length}/${MAX_MY_FARM_FIELDS})`;
     button.setAttribute('data-testid', 'leaflet-popup-select-farm-btn');
     button.style.width = '100%';
-    button.style.padding = '10px';
-    button.style.marginTop = '12px';
-    button.style.background = '#16a34a';
+    button.style.padding = '8px 10px';
+    button.style.marginTop = '10px';
+    button.style.background = existingSlot ? '#0369a1' : '#15803d';
     button.style.color = 'white';
-    button.style.borderRadius = '10px';
-    button.style.fontWeight = 'bold';
+    button.style.borderRadius = '8px';
+    button.style.fontWeight = '600';
+    button.style.fontSize = '12px';
     button.style.cursor = 'pointer';
 
     button.onclick = () => {
-      const bounds = (layer as L.Polygon).getBounds();
-      const farmCenter = bounds.getCenter();
-
-      onFarmSelect({
-        ...feature,
-        location: {
-          lat: farmCenter.lat,
-          lon: farmCenter.lng,
-        },
-      });
+      handleAddParcelFeature(feature);
     };
 
     container.appendChild(title);
-    container.appendChild(id);
-    container.appendChild(area);
+    container.appendChild(meta);
     container.appendChild(button);
+
+    if (existingSlot) {
+      const removeBtn = document.createElement('button');
+      removeBtn.textContent = 'Remove from My Fields';
+      removeBtn.style.width = '100%';
+      removeBtn.style.padding = '6px 10px';
+      removeBtn.style.marginTop = '6px';
+      removeBtn.style.background = '#fee2e2';
+      removeBtn.style.color = '#b91c1c';
+      removeBtn.style.borderRadius = '8px';
+      removeBtn.style.fontWeight = '600';
+      removeBtn.style.fontSize = '11px';
+      removeBtn.style.cursor = 'pointer';
+      removeBtn.onclick = () => {
+        handleRemoveField(existingSlot.fieldId);
+      };
+      container.appendChild(removeBtn);
+    }
 
     layer.bindPopup(container);
   }
+
+  const pointSelectedFields = selectedFields.filter((f) => !f.geometry);
 
   return (
     <div
       data-testid="iowa-map-selection-page"
       className="relative w-full h-screen bg-gray-100 overflow-hidden font-sans"
     >
-      {/* Top Control & Search Overlay */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] w-[94%] max-w-4xl">
-        <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-2xl p-4 border border-gray-100 flex flex-col gap-3">
-          <div className="flex flex-col md:flex-row items-center gap-3">
-            {onBackToDashboard && (
-              <button
-                type="button"
-                data-testid="map-back-to-dashboard-btn"
-                onClick={onBackToDashboard}
-                className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer flex-shrink-0"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span>Dashboard</span>
-              </button>
-            )}
-
-            <div className="text-green-700 font-extrabold text-base md:text-lg flex items-center gap-2 whitespace-nowrap">
-              <MapPin className="w-5 h-5" />
-              Select Farm Location
+      {/* Top Compact Map Control & Multi-Field Selection Tray */}
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] w-[95%] max-w-5xl">
+        <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-xl p-4 border border-gray-100 flex flex-col gap-3">
+          {/* Row 1: Title, Search, Locate, Done / Continue Buttons */}
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div className="text-green-800 font-bold text-base flex items-center gap-1.5 mr-1">
+              <MapPin className="w-5 h-5 text-green-700" />
+              <span>Select Farm Fields</span>
             </div>
 
             <form
               onSubmit={handleSearch}
-              className="flex-1 w-full bg-gray-50 rounded-xl px-4 py-2 flex items-center border border-gray-200"
+              className="flex-1 min-w-[200px] bg-gray-50 rounded-xl px-3.5 py-2 flex items-center border border-gray-200"
             >
               <Search className="w-4 h-4 text-gray-400 mr-2" />
-
               <input
                 type="text"
                 data-testid="map-search-input"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search Iowa city, ZIP code or address..."
-                className="bg-transparent outline-none w-full text-sm"
+                placeholder="Search city, county or coordinates..."
+                className="bg-transparent outline-none w-full text-xs text-gray-800"
               />
-
               <button
                 type="submit"
                 disabled={searching}
-                className="text-green-700 font-bold text-xs ml-2 cursor-pointer"
+                className="text-green-700 font-semibold text-xs ml-2 cursor-pointer"
               >
                 Search
               </button>
@@ -575,104 +694,185 @@ export default function MapSelection({
               type="button"
               onClick={handleLocate}
               disabled={searching}
-              className="bg-green-100 text-green-700 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 hover:bg-green-200 cursor-pointer flex-shrink-0"
+              className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
             >
-              <Navigation className="w-4 h-4" />
-              Auto Locate
+              <Navigation className="w-3.5 h-3.5" />
+              <span>Locate</span>
             </button>
+
+            {selectedFields.length > 0 ? (
+              <button
+                type="button"
+                data-testid="map-done-view-dashboard-btn"
+                onClick={handleFinishToDashboard}
+                className="bg-green-800 hover:bg-green-700 text-white px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-sm cursor-pointer"
+              >
+                <span>Done · View Dashboard ({selectedFields.length})</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            ) : (
+              (onContinueWithoutFarm || onBackToDashboard) && (
+                <button
+                  type="button"
+                  data-testid="map-continue-without-farm-btn"
+                  onClick={onContinueWithoutFarm ?? onBackToDashboard}
+                  className="bg-gray-900 hover:bg-gray-800 text-white px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer"
+                >
+                  Continue Without Farm
+                </button>
+              )
+            )}
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs text-gray-500">Search Radius:</span>
-
+          {/* Row 2: Radius, Quick Add Parcel / Point Controls & Parcel Counter */}
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-gray-500">Radius:</span>
               {RADII.map((value) => (
                 <button
                   key={value}
                   type="button"
                   onClick={() => setRadius(value)}
-                  className={`px-3 py-1 rounded-full text-xs font-bold cursor-pointer ${
+                  className={`px-2.5 py-1 rounded-lg font-semibold cursor-pointer ${
                     radius === value
-                      ? 'bg-green-600 text-white'
-                      : 'bg-gray-100 text-gray-600'
+                      ? 'bg-green-800 text-white'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                   }`}
                 >
                   {value} km
                 </button>
               ))}
 
-              <button
-                type="button"
-                data-testid="map-load-iowa-parcels-btn"
-                onClick={handleLoadIowaParcels}
-                className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100 transition-colors cursor-pointer"
-              >
-                Load Iowa USDA Parcels
-              </button>
-
-              {(filteredFields.length > 0 || (fields?.features?.length ?? 0) > 0) && (
+              {(filteredFields.length > 0 ||
+                (fields?.features?.length ?? 0) > 0) && (
                 <button
                   type="button"
                   data-testid="map-select-iowa-parcel-btn"
-                  onClick={handleSelectActiveIowaParcel}
-                  className="px-3 py-1 rounded-full text-xs font-bold bg-green-700 text-white hover:bg-green-800 transition-colors shadow-sm flex items-center gap-1 cursor-pointer"
+                  disabled={selectedFields.length >= MAX_MY_FARM_FIELDS}
+                  onClick={handleAddQuickIowaParcel}
+                  className="px-3 py-1 rounded-lg font-semibold bg-green-700 text-white hover:bg-green-800 disabled:opacity-50 flex items-center gap-1 cursor-pointer ml-1"
                 >
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Select Active Iowa USDA Parcel</span>
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add USDA Parcel</span>
                 </button>
               )}
+
+              <button
+                type="button"
+                data-testid="map-confirm-location-btn"
+                disabled={selectedFields.length >= MAX_MY_FARM_FIELDS}
+                onClick={() =>
+                  handleAddPointLocation(
+                     (pinnedPoint ?? center).lat,
+                    (pinnedPoint ?? center).lng
+                  )
+                }
+                className="px-3 py-1 rounded-lg font-semibold bg-blue-50 text-blue-800 border border-blue-200 hover:bg-blue-100 disabled:opacity-50 flex items-center gap-1 cursor-pointer"
+              >
+                <MapPin className="w-3.5 h-3.5" />
+                <span>
+                  Add Point ({(pinnedPoint ?? center).lat.toFixed(2)}°,{' '}
+                  {(pinnedPoint ?? center).lng.toFixed(2)}°)
+                </span>
+              </button>
             </div>
 
-            <div
-              data-testid="map-farms-found-badge"
-              className="text-xs font-bold text-green-700"
-            >
-              {loading || searching ? (
-                <span className="flex items-center gap-2">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Loading...
-                </span>
-              ) : (
-                <>
-                  {filteredFields.length.toLocaleString()} Farms Found ·{' '}
-                  {totalHectares.toFixed(1)} ha
-                  {dataSourceLabel ? ` (${dataSourceLabel})` : ''}
-                </>
-              )}
+            <div className="flex items-center gap-3">
+              <span
+                data-testid="map-selected-fields-counter"
+                className="px-2.5 py-1 rounded-lg bg-green-50 text-green-900 border border-green-200 font-semibold"
+              >
+                Selected: {selectedFields.length} / {MAX_MY_FARM_FIELDS}
+              </span>
+              <span
+                data-testid="map-farms-found-badge"
+                className="text-gray-500 font-medium"
+              >
+                {loading || searching ? (
+                  <span className="flex items-center gap-1">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Loading…
+                  </span>
+                ) : (
+                  `${filteredFields.length.toLocaleString()} parcels in view${
+                    dataSourceLabel ? ` · ${dataSourceLabel}` : ''
+                  }`
+                )}
+              </span>
             </div>
           </div>
 
-          {error && <p className="text-xs text-red-600">{error}</p>}
-
-          {!loading && !error && filteredFields.length === 0 && (
-            <p className="text-xs text-amber-700">
-              No fields in the currently loaded radius ({center.lat.toFixed(2)}°,{' '}
-              {center.lng.toFixed(2)}°). Click &quot;Load Iowa USDA Parcels&quot; to
-              center on active USDA NASS Iowa polygons, or add local{' '}
-              <code>/data/ames_fields.geojson</code>.
-            </p>
+          {/* Row 3: Selected Fields Chips (Active Switcher + Individual Remove) */}
+          {selectedFields.length > 0 && (
+            <div
+              data-testid="map-selected-fields-tray"
+              className="pt-2 border-t border-gray-100 flex flex-wrap items-center gap-2"
+            >
+              <span className="text-[11px] font-semibold text-gray-500">
+                My Fields:
+              </span>
+              {selectedFields.map((slot) => {
+                const isActive = slot.fieldId === multiState.activeFieldId;
+                return (
+                  <div
+                    key={slot.fieldId}
+                    data-testid={`map-selected-chip-${slot.fieldId}`}
+                    className={`flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-xs font-semibold border transition-colors ${
+                      isActive
+                        ? 'bg-amber-50 border-amber-400 text-amber-950'
+                        : 'bg-blue-50/70 border-blue-200 text-blue-900'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleSetActiveField(slot.fieldId)}
+                      className="flex items-center gap-1 cursor-pointer"
+                      title="Click to make active field"
+                    >
+                      <CheckCircle2
+                        className={`w-3.5 h-3.5 ${
+                          isActive ? 'text-amber-600' : 'text-blue-600'
+                        }`}
+                      />
+                      <span>{slot.fieldName}</span>
+                      {slot.areaHa !== null && slot.areaHa !== undefined && (
+                        <span className="text-[10px] opacity-75">
+                          ({slot.areaHa} ha)
+                        </span>
+                      )}
+                      {!slot.geometry && (
+                        <span className="text-[10px] opacity-75">
+                          (Point)
+                        </span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid={`map-remove-chip-${slot.fieldId}`}
+                      onClick={() => handleRemoveField(slot.fieldId)}
+                      title="Remove field"
+                      className="p-0.5 rounded hover:bg-black/10 cursor-pointer"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
           )}
 
-          {/* Regional Coverage & NASA Global Capability Disclosure Note */}
-          <div
-            data-testid="iowa-regional-coverage-note"
-            className="bg-amber-50/90 border border-amber-200/80 rounded-xl px-3 py-2 text-[11px] text-amber-950 flex items-start gap-2 leading-snug"
-          >
-            <Info className="w-4 h-4 text-amber-700 flex-shrink-0 mt-0.5" />
-            <div>
-              <span className="font-bold">Regional Parcel Coverage Note: </span>
-              CropWise currently integrates USDA agricultural parcel mapping for
-              Iowa as our regional demonstration dataset. Farmers in other
-              locations can enter coordinates to explore NASA POWER historical
-              climate data and preliminary crop-rotation scenarios, while wider
-              farm-boundary integration and local agronomic validation remain
-              future work.
+          {(statusNotice || error) && (
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              {statusNotice && (
+                <span className="text-green-800 font-medium">{statusNotice}</span>
+              )}
+              {error && <span className="text-amber-800 font-medium">{error}</span>}
             </div>
-          </div>
+          )}
         </div>
       </div>
 
-      {/* One Map Only */}
+      {/* Interactive Leaflet Map */}
       <MapContainer
         center={[center.lat, center.lng]}
         zoom={11}
@@ -688,10 +888,58 @@ export default function MapSelection({
 
         <MapController center={center} radius={radius} />
 
-        <MapClickListener onMapClick={selectLocation} />
+        <MapClickListener onMapClick={handleMapClick} />
 
-        {searched && (
-          <Marker position={[center.lat, center.lng]} icon={markerIcon} />
+        {/* Pinned map click marker */}
+        {pinnedPoint && (
+          <Marker
+            position={[pinnedPoint.lat, pinnedPoint.lng]}
+            icon={markerIcon}
+          >
+            <Popup>
+              <div className="text-xs space-y-1.5">
+                <p className="font-bold text-gray-900">
+                  Selected Coordinates ({pinnedPoint.lat.toFixed(4)}°,{' '}
+                  {pinnedPoint.lng.toFixed(4)}°)
+                </p>
+                <p className="text-gray-500">
+                  Real parcel boundary polygons are unavailable outside USDA-mapped fields; saved as a verified coordinate point.
+                </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleAddPointLocation(pinnedPoint.lat, pinnedPoint.lng)
+                  }
+                  className="w-full px-2.5 py-1.5 rounded-lg bg-green-700 text-white font-semibold cursor-pointer"
+                >
+                  Add Point to My Fields
+                </button>
+              </div>
+            </Popup>
+          </Marker>
+        )}
+
+        {/* Markers for point-based selected fields */}
+        {pointSelectedFields.map((slot) =>
+          slot.latitude !== null && slot.longitude !== null ? (
+            <Marker
+              key={slot.fieldId}
+              position={[slot.latitude, slot.longitude]}
+              icon={markerIcon}
+            >
+              <Popup>
+                <div className="text-xs space-y-1">
+                  <p className="font-bold text-gray-900">{slot.fieldName}</p>
+                  <p className="text-gray-600">
+                    {slot.latitude.toFixed(4)}°, {slot.longitude.toFixed(4)}°
+                  </p>
+                  <p className="text-amber-700">
+                    Point selection (parcel boundary unavailable)
+                  </p>
+                </div>
+              </Popup>
+            </Marker>
+          ) : null
         )}
 
         <Circle
@@ -699,21 +947,16 @@ export default function MapSelection({
           radius={radius * 1000}
           pathOptions={{
             color: '#16a34a',
-            weight: 2,
-            fillOpacity: 0.025,
+            weight: 1.5,
+            fillOpacity: 0.02,
           }}
         />
 
         {fields && (
           <GeoJSON
-            key={`${center.lat}-${center.lng}-${radius}-${fields.features.length}`}
+            key={`${center.lat}-${center.lng}-${radius}-${fields.features.length}-${multiState.activeFieldId}-${selectedFields.length}`}
             data={filteredGeoJSON as any}
-            style={{
-              color: '#15803d',
-              weight: 1,
-              fillColor: '#4ade80',
-              fillOpacity: 0.35,
-            }}
+            style={styleFeature}
             onEachFeature={onEachFeature}
           />
         )}

@@ -48,10 +48,16 @@ import {
   type SimulatedRiskLevel,
   type TimeRangeKey,
 } from '../../data/reportsHistoryData';
+import {
+  getCompletedRiskActions,
+  removeCompletedRiskAction,
+  type CompletedRiskActionRecord,
+} from '../../services/riskAndFarmStore';
 
 interface ReportsHistoryProps {
   activeField?: string | null;
   dataProvider?: ReportsHistoryDataProvider;
+  onNavigate?: (page: string) => void;
 }
 
 const TIME_RANGE_OPTIONS: { id: TimeRangeKey; label: string }[] = [
@@ -314,10 +320,20 @@ const EnvTrendSvgChart: React.FC<EnvTrendSvgChartProps> = ({ metric, dataMode, s
 const ReportsHistory: React.FC<ReportsHistoryProps> = ({
   activeField,
   dataProvider = demoReportsHistoryProvider,
+  onNavigate,
 }) => {
   // Shared verified farm location state (restored from localStorage / shared store; null if unverified)
   const initialShared = getSharedFarmLocationState();
   const [farmProfile, setFarmProfile] = useState<MyFarmProfile>(() => getSavedMyFarmProfile());
+  const [completedActions, setCompletedActions] = useState<CompletedRiskActionRecord[]>(() =>
+    getCompletedRiskActions()
+  );
+  const [selectedCompletedActionId, setSelectedCompletedActionId] = useState<string | null>(null);
+
+  const handleRemoveCompletedAction = (actionId: string) => {
+    const next = removeCompletedRiskAction(actionId);
+    setCompletedActions(next);
+  };
 
   // Data Mode ('demo' vs 'nasa-power')
   const [dataMode, setDataMode] = useState<DataMode>(() =>
@@ -1052,7 +1068,11 @@ const ReportsHistory: React.FC<ReportsHistoryProps> = ({
           {/* 2. MODULE A: Action Effect Tracking (Visual Focal Point — Dark Glassmorphism Card) */}
           {isMyFarm ? (
             <section
-              data-testid="my-farm-no-actions-banner"
+              data-testid={
+                completedActions.length > 0
+                  ? 'my-farm-completed-actions-section'
+                  : 'my-farm-no-actions-banner'
+              }
               aria-label="Action Effect Tracking"
               className="bg-[#161b18]/90 backdrop-blur-xl border border-white/10 rounded-3xl p-5 md:p-6 shadow-xl text-white flex-shrink-0"
             >
@@ -1072,43 +1092,164 @@ const ReportsHistory: React.FC<ReportsHistoryProps> = ({
                       farmProfile.currentCrop}
                   </h2>
                 </div>
-                <button
-                  type="button"
-                  data-testid="switch-to-explore-demo-actions-btn"
-                  onClick={() => handleSelectExperienceMode('explore-demo')}
-                  className="px-3.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-semibold border border-white/15 cursor-pointer"
-                >
-                  Explore Demo Field Action Chains
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  {onNavigate && (
+                    <button
+                      type="button"
+                      data-testid="reports-open-risk-management-btn"
+                      onClick={() => onNavigate('risks')}
+                      className="px-3.5 py-1.5 rounded-xl bg-green-700 hover:bg-green-600 text-white text-xs font-semibold cursor-pointer"
+                    >
+                      Open Risk Management
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    data-testid="switch-to-explore-demo-actions-btn"
+                    onClick={() => handleSelectExperienceMode('explore-demo')}
+                    className="px-3.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-semibold border border-white/15 cursor-pointer"
+                  >
+                    Explore Demo Field Action Chains
+                  </button>
+                </div>
               </div>
 
-              <div className="p-4 rounded-2xl bg-white/5 border border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <p className="text-sm font-semibold text-amber-300">
-                    No recorded farm actions yet
-                  </p>
-                  <p className="text-xs text-gray-300 leading-relaxed">
-                    In <strong>My Farm</strong> mode, CropWise does not mix the team’s simulated demo field snapshots (<em>North Field A1, East Field B2, South Field C3</em>) or simulated post-action outcomes into your real farm analysis. Real NASA POWER historical climate trends (<code className="text-green-300">T2M</code> and <code className="text-green-300">PRECTOTCORR</code>) for your farm coordinates are displayed below.
-                  </p>
+              {completedActions.length === 0 ? (
+                <div className="p-4 rounded-2xl bg-white/5 border border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <p className="text-sm font-semibold text-amber-300">
+                      No recorded farm actions yet
+                    </p>
+                    <p className="text-xs text-gray-300 leading-relaxed">
+                      In <strong>My Farm</strong> mode, CropWise does not mix the team’s simulated demo field snapshots (<em>North Field A1, East Field B2, South Field C3</em>) or simulated post-action outcomes into your real farm analysis. Mark recommended actions as completed in <strong>Risk Management</strong> to track them here.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2 text-[11px] text-gray-300 flex-shrink-0">
+                    <span className="px-2.5 py-1 rounded-xl bg-white/10 border border-white/10">
+                      Soil pH:{' '}
+                      <strong className="text-white">
+                        {farmProfile.soilPh !== null
+                          ? farmProfile.soilPh.toFixed(1)
+                          : 'Not provided'}
+                      </strong>
+                    </span>
+                    <span className="px-2.5 py-1 rounded-xl bg-white/10 border border-white/10">
+                      Irrigation:{' '}
+                      <strong className="text-white">
+                        {IRRIGATION_OPTIONS.find((i) => i.id === farmProfile.irrigationAvailability)
+                          ?.label ?? farmProfile.irrigationAvailability}
+                      </strong>
+                    </span>
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-2 text-[11px] text-gray-300 flex-shrink-0">
-                  <span className="px-2.5 py-1 rounded-xl bg-white/10 border border-white/10">
-                    Soil pH:{' '}
-                    <strong className="text-white">
-                      {farmProfile.soilPh !== null
-                        ? farmProfile.soilPh.toFixed(1)
-                        : 'Not provided'}
-                    </strong>
-                  </span>
-                  <span className="px-2.5 py-1 rounded-xl bg-white/10 border border-white/10">
-                    Irrigation:{' '}
-                    <strong className="text-white">
-                      {IRRIGATION_OPTIONS.find((i) => i.id === farmProfile.irrigationAvailability)
-                        ?.label ?? farmProfile.irrigationAvailability}
-                    </strong>
-                  </span>
-                </div>
-              </div>
+              ) : (
+                (() => {
+                  const focusedAct =
+                    completedActions.find((a) => a.id === selectedCompletedActionId) ??
+                    completedActions[0];
+                  return (
+                    <div className="flex flex-col gap-4">
+                      {completedActions.length > 1 && (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[11px] text-gray-300 mr-1">
+                            Recorded Actions ({completedActions.length}):
+                          </span>
+                          {completedActions.map((act) => (
+                            <button
+                              key={act.id}
+                              type="button"
+                              onClick={() => setSelectedCompletedActionId(act.id)}
+                              className={`px-3 py-1 rounded-xl text-xs font-semibold cursor-pointer ${
+                                act.id === focusedAct.id
+                                  ? 'bg-green-600 text-white'
+                                  : 'bg-white/10 text-gray-300 hover:bg-white/20'
+                              }`}
+                            >
+                              {act.recommendedActionTitle.slice(0, 32)}…
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+                        <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col justify-between">
+                          <div>
+                            <div className="flex items-center justify-between text-[11px] text-red-300 font-semibold mb-2">
+                              <span>1. IDENTIFIED RISK</span>
+                              <AlertTriangle className="w-3.5 h-3.5" />
+                            </div>
+                            <h3 className="text-xs font-semibold text-white mb-1.5">
+                              {focusedAct.riskTitle}
+                            </h3>
+                            <p className="text-[11px] text-gray-300 leading-relaxed">
+                              {focusedAct.supportingDataSnapshot.join(' • ')}
+                            </p>
+                          </div>
+                          <div className="mt-3 pt-2 border-t border-white/10 text-[10px] text-gray-400">
+                            Severity at Log: {focusedAct.riskSeverityAtCompletion} ({focusedAct.riskCategoryLabel})
+                          </div>
+                        </div>
+
+                        <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col justify-between">
+                          <div>
+                            <div className="flex items-center justify-between text-[11px] text-amber-300 font-semibold mb-2">
+                              <span>2. RECOMMENDED</span>
+                              <Info className="w-3.5 h-3.5" />
+                            </div>
+                            <h3 className="text-xs font-semibold text-white mb-1.5">
+                              {focusedAct.recommendedActionTitle}
+                            </h3>
+                            <p className="text-[11px] text-gray-300 leading-relaxed">
+                              {focusedAct.recommendedActionDetail}
+                            </p>
+                          </div>
+                          <div className="mt-3 pt-2 border-t border-white/10 text-[10px] text-amber-300/90">
+                            Source: {focusedAct.dataSourceLabel}
+                          </div>
+                        </div>
+
+                        <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col justify-between">
+                          <div>
+                            <div className="flex items-center justify-between text-[11px] text-emerald-300 font-semibold mb-2">
+                              <span>3. ACTION COMPLETED</span>
+                              <Clock className="w-3.5 h-3.5" />
+                            </div>
+                            <h3 className="text-xs font-semibold text-white mb-1.5">
+                              Logged for {focusedAct.fieldName} ({focusedAct.cropLabel})
+                            </h3>
+                            <p className="text-[11px] text-gray-300 leading-relaxed">
+                              {focusedAct.userNotes
+                                ? `Operator Note: "${focusedAct.userNotes}"`
+                                : 'Marked completed by operator in Risk Management.'}
+                            </p>
+                          </div>
+                          <div className="mt-3 pt-2 border-t border-white/10 text-[10px] text-emerald-300">
+                            {new Date(focusedAct.completedAtIso).toLocaleString()}
+                          </div>
+                        </div>
+
+                        <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col justify-between">
+                          <div>
+                            <div className="flex items-center justify-between text-[11px] text-amber-300 font-semibold mb-2">
+                              <span>4. RISK STATUS</span>
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                            </div>
+                            <h3 className="text-xs font-semibold text-white mb-1.5">
+                              {focusedAct.verificationStatusLabel}
+                            </h3>
+                            <p className="text-[11px] text-gray-300 leading-relaxed">
+                              Completing a mitigation step records the farmer’s intervention; it does not automatically mark the underlying {focusedAct.riskSeverityAtCompletion.toLowerCase()} risk as resolved without on-site field verification.
+                            </p>
+                          </div>
+                          <div className="mt-3 pt-2 border-t border-white/10 text-[10px] text-amber-200/90">
+                            Scientific Honesty Guardrail Active
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()
+              )}
             </section>
           ) : (
             activeEffectRecord && (
@@ -1597,17 +1738,51 @@ const ReportsHistory: React.FC<ReportsHistoryProps> = ({
                 </div>
 
                 {isMyFarm ? (
-                  <div
-                    data-testid="my-farm-no-risk-history"
-                    className="p-5 rounded-2xl bg-gray-50 border border-dashed border-gray-200 text-xs text-gray-600 flex flex-col gap-1.5"
-                  >
-                    <span className="font-semibold text-gray-800">
-                      No recorded farm actions yet
-                    </span>
-                    <p className="leading-relaxed">
-                      Simulated risk history from the three demo fields is excluded in <strong>My Farm</strong> mode. Switch to <strong>Explore Demo</strong> if you wish to inspect the team’s illustrative risk timeline.
-                    </p>
-                  </div>
+                  completedActions.length === 0 ? (
+                    <div
+                      data-testid="my-farm-no-risk-history"
+                      className="p-5 rounded-2xl bg-gray-50 border border-dashed border-gray-200 text-xs text-gray-600 flex flex-col gap-1.5"
+                    >
+                      <span className="font-semibold text-gray-800">
+                        No recorded farm actions yet
+                      </span>
+                      <p className="leading-relaxed">
+                        Simulated risk history from the three demo fields is excluded in <strong>My Farm</strong> mode. Mark actions completed in <strong>Risk Management</strong> or switch to <strong>Explore Demo</strong>.
+                      </p>
+                    </div>
+                  ) : (
+                    <div
+                      data-testid="my-farm-risk-history-list"
+                      className="flex flex-col gap-3"
+                    >
+                      {completedActions.map((act) => (
+                        <div
+                          key={act.id}
+                          className="p-4 rounded-2xl bg-gray-50 border border-gray-100 flex flex-col gap-2 text-xs"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-semibold text-gray-900">
+                                {act.riskTitle}
+                              </span>
+                              <span className="px-2 py-0.5 rounded-full bg-green-100 text-green-800 text-[10px] font-semibold">
+                                {act.fieldName} ({act.cropLabel})
+                              </span>
+                            </div>
+                            <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[10px] font-semibold">
+                              {act.riskSeverityAtCompletion} Severity • {act.verificationStatusLabel}
+                            </span>
+                          </div>
+                          <p className="text-gray-600">
+                            <b>Supporting Snapshot:</b> {act.supportingDataSnapshot.join(' • ')}
+                          </p>
+                          <p className="text-[11px] text-gray-400">
+                            Action Recorded: {new Date(act.completedAtIso).toLocaleString()} • Source: {act.dataSourceLabel}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )
                 ) : (
                   <div className="flex flex-col gap-4">
                     {bundle.riskHistory.map((row) => (
@@ -1690,17 +1865,68 @@ const ReportsHistory: React.FC<ReportsHistoryProps> = ({
                   </div>
 
                   {isMyFarm ? (
-                    <div
-                      data-testid="my-farm-no-activity-timeline"
-                      className="p-6 rounded-2xl bg-gray-50 border border-dashed border-gray-200 text-xs text-gray-600 flex flex-col gap-1.5"
-                    >
-                      <span className="font-semibold text-gray-800">
-                        No recorded farm actions yet
-                      </span>
-                      <p className="leading-relaxed">
-                        No real field operations have been recorded for <strong>{farmProfile.farmName}</strong>. CropWise does not display simulated demo activity logs when <strong>My Farm</strong> mode is active.
-                      </p>
-                    </div>
+                    completedActions.length === 0 ? (
+                      <div
+                        data-testid="my-farm-no-activity-timeline"
+                        className="p-6 rounded-2xl bg-gray-50 border border-dashed border-gray-200 text-xs text-gray-600 flex flex-col gap-1.5"
+                      >
+                        <span className="font-semibold text-gray-800">
+                          No recorded farm actions yet
+                        </span>
+                        <p className="leading-relaxed">
+                          No real field operations have been recorded for <strong>{farmProfile.farmName}</strong>. CropWise does not display simulated demo activity logs when <strong>My Farm</strong> mode is active.
+                        </p>
+                      </div>
+                    ) : (
+                      <div
+                        data-testid="my-farm-activity-timeline-list"
+                        className="relative pl-4 border-l-2 border-green-100 flex flex-col gap-3.5"
+                      >
+                        {completedActions.map((act) => (
+                          <div
+                            key={act.id}
+                            data-testid={`reports-activity-item-${act.id}`}
+                            className="relative p-3.5 rounded-2xl bg-gray-50/80 border border-gray-100 hover:border-green-200 transition-colors"
+                          >
+                            <span className="absolute -left-[21px] top-4 w-3 h-3 rounded-full bg-green-600 border-2 border-white shadow-sm" />
+                            <div className="flex flex-wrap items-center justify-between gap-1.5 mb-1">
+                              <span className="text-[11px] font-semibold text-green-800">
+                                {new Date(act.completedAtIso).toLocaleString()}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveCompletedAction(act.id)}
+                                className="text-[10px] text-gray-400 hover:text-red-600 font-semibold cursor-pointer"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
+                              <span className="text-xs font-semibold text-gray-800">
+                                {act.fieldName} ({act.cropLabel})
+                              </span>
+                              <span className="text-[10px] px-2 py-0.5 rounded-md bg-white border border-gray-200 text-gray-600 font-medium">
+                                {act.riskCategoryLabel}
+                              </span>
+                            </div>
+                            <h3 className="text-xs font-semibold text-gray-900 mb-1">
+                              {act.recommendedActionTitle}
+                            </h3>
+                            <p className="text-[11px] text-gray-600 leading-relaxed">
+                              {act.recommendedActionDetail}
+                            </p>
+                            {act.userNotes && (
+                              <p className="text-[11px] text-green-900 bg-green-50 px-2.5 py-1 rounded-lg border border-green-100 mt-1.5">
+                                <b>Operator Note:</b> {act.userNotes}
+                              </p>
+                            )}
+                            <p className="text-[10px] text-amber-800 mt-1.5 font-medium">
+                              Status: {act.verificationStatusLabel}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )
                   ) : (
                     <>
                       {/* Activity Category Filter Tabs */}
