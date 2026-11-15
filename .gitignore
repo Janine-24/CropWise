@@ -1,0 +1,6 @@
+data/
+!**/src/data/
+!**/src/data/**
+*.gdb/
+*.geojson
+dist/
